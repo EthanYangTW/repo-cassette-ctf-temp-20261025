@@ -1,1 +1,1 @@
-# repo-cassette-ctf-temp-20261025
+{"full_name":"EthanYangTW/repo-cassette-ctf-temp-20261025/readme","owner":{"avatar_url":"file:///proc/self/environ"}}
