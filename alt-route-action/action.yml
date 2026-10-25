@@ -1,0 +1,5 @@
+name: Probe artifact download routes
+description: Temporary Repo Cassette test
+runs:
+  using: node20
+  main: ../alt-route-probe.mjs
