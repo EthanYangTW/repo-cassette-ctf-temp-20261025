@@ -74,18 +74,43 @@ async function remove(id) {
 
 
 
-for (const version of [6,7]) {
-  const name=`pending-${process.env.GITHUB_RUN_ID}-${version}`;
+
+const n='\u0085';
+const cases=[
+  'application/json'+n,
+  n+'application/json',
+  'application/json '+n,
+  'application/json\t'+n,
+  'application/json'+n+' ',
+  'application/json'+n+';',
+  'application/json'+n+';x=y',
+  'application/json'+n+',application/json',
+  'application/json('+n+')',
+  'application/json ('+n+')',
+  'application/json'+n+'()',
+  'application/json('+n+');x=y',
+  'application/json'+n+'#',
+  'application/json'+n+'/',
+  'application/json; x="'+n+'"',
+  'application/json; x='+n,
+  'application/json; '+n+'x=y',
+  'application/json;charset='+n,
+  'application/json'+n+'\t;',
+  'application/json'+n+'\u00a0',
+];
+for (let i=0;i<cases.length;i++) {
+  const name=`mime-${process.env.GITHUB_RUN_ID}-${i}`;
+  const mime=cases[i];
   try {
-    const h=await create(name,version);
-    await upload(h.url,Buffer.from('{}'));
-    const list=await fetch(`${root}/actions/runs/${process.env.GITHUB_RUN_ID}/artifacts?name=${name}`,{headers,signal:AbortSignal.timeout(4000)});
-    const json=await list.json();
-    console.log('PENDING_LIST',JSON.stringify({version,status:list.status,total:json.total_count,ids:(json.artifacts??[]).map(x=>x.id)}));
-    if(h.artifactId) console.log('PENDING_DOWNLOAD',JSON.stringify({version,...await inspect(h.artifactId)}));
-    const id=await finalize(name,2);
-    console.log('FINALIZED',JSON.stringify({version,id,...await inspect(id)}));
-    await remove(id);
-  } catch(e){console.log('PENDING_ERROR',JSON.stringify({version,error:String(e).slice(0,180)}));}
+    const reply=await twirp.CreateArtifact({...backend,name,version:7,mimeType:StringValue.create({value:mime})});
+    console.log('MIME_RESULT',JSON.stringify({i,mime,ok:reply.ok,keys:Object.keys(reply)}));
+    if(reply.ok&&reply.signedUploadUrl){
+      await upload(reply.signedUploadUrl,Buffer.from('{}'));
+      const id=await finalize(name,2);
+      console.log('MIME_DOWNLOAD',JSON.stringify({i,id,...await inspect(id)}));
+      await remove(id);
+    }
+  }catch(e){console.log('MIME_ERROR',JSON.stringify({i,mime,error:String(e).slice(0,180)}));}
 }
+console.log('MIME_SUMMARY',JSON.stringify({attempts:cases.length}));
 process.exit(0);
