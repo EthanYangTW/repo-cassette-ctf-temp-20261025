@@ -75,28 +75,16 @@ async function remove(id) {
 
 
 
-const n='\u0085';
 const cases=[
-  'application/json'+n,
-  n+'application/json',
-  'application/json '+n,
-  'application/json\t'+n,
-  'application/json'+n+' ',
-  'application/json'+n+';',
-  'application/json'+n+';x=y',
-  'application/json'+n+',application/json',
-  'application/json('+n+')',
-  'application/json ('+n+')',
-  'application/json'+n+'()',
-  'application/json('+n+');x=y',
-  'application/json'+n+'#',
-  'application/json'+n+'/',
-  'application/json; x="'+n+'"',
-  'application/json; x='+n,
-  'application/json; '+n+'x=y',
-  'application/json;charset='+n,
-  'application/json'+n+'\t;',
-  'application/json'+n+'\u00a0',
+  'application/json; x="&rsct=application/json%85"',
+  'application/json; x="&rsct=%85application/json"',
+  'application/json; x="&response-content-type=application/json%85"',
+  'application/json; boundary="foo&rsct=application/json%85"',
+  'application/json; charset="utf-8&rsct=application/json%85"',
+  'application/json; x="%26rsct%3Dapplication%2Fjson%2585"',
+  'application/json; x="?rsct=application/json%85"',
+  'application/json; x=";rsct=application/json%85"',
+  'application/json; x="\\&rsct=application/json%85"',
 ];
 for (let i=0;i<cases.length;i++) {
   const name=`mime-${process.env.GITHUB_RUN_ID}-${i}`;
@@ -107,7 +95,7 @@ for (let i=0;i<cases.length;i++) {
     if(reply.ok&&reply.signedUploadUrl){
       await upload(reply.signedUploadUrl,Buffer.from('{}'));
       const id=await finalize(name,2);
-      console.log('MIME_DOWNLOAD',JSON.stringify({i,id,...await inspect(id)}));
+      const first=await fetch(`${root}/actions/artifacts/${id}/zip`,{headers,redirect:'manual'}); const loc=first.headers.get('location'); const u=loc?new URL(loc):null; console.log('MIME_DOWNLOAD',JSON.stringify({i,id,rsct:u?.searchParams.getAll('rsct')??[],...await inspect(id)}));
       await remove(id);
     }
   }catch(e){console.log('MIME_ERROR',JSON.stringify({i,mime,error:String(e).slice(0,180)}));}
