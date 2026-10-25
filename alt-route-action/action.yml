@@ -1,5 +1,5 @@
-name: Probe artifact MIME fallback
+name: Probe future artifact versions
 description: Temporary Repo Cassette test
 runs:
   using: node20
-  main: ../no-mime-probe.mjs
+  main: ../future-version-probe.mjs
