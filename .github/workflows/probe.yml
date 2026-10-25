@@ -1,15 +1,71 @@
-name: Repo Cassette alternate routes
+name: Repo Cassette LFS route probe
 on:
+  push:
+    paths:
+      - .github/workflows/probe.yml
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
   actions: read
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npm install --no-package-lock --ignore-scripts
-      - uses: ./alt-route-action
+      - name: Upload a small LFS object
+        shell: bash
+        run: |
+          set -euo pipefail
+          git lfs install
+          git lfs track payload.json
+          printf '{"probe":"repo-cassette-lfs"}' > payload.json
+          git config user.name 'repo-cassette-probe'
+          git config user.email 'repo-cassette-probe@users.noreply.github.com'
+          git add .gitattributes payload.json
+          git commit -m 'Add temporary LFS probe object'
+          git push origin HEAD:main
+          printf 'LFS_OID=%s\n' "$(sha256sum payload.json | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Probe GitHub REST paths
         env:
           GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const root = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}`;
+          const oid = process.env.LFS_OID;
+          const paths = [
+            `git/blobs/${oid}`,
+            `git/lfs/objects/${oid}`,
+            `lfs/objects/${oid}`,
+            `info/lfs/objects/${oid}`,
+            `contents/payload.json`,
+            `contents/payload.json?raw=1`,
+            `contents/payload.json?download=1`,
+            `contents/payload.json?lfs=true`,
+            `contents/payload.json?media=raw`,
+            `raw/main/payload.json`,
+            `media/main/payload.json`,
+            `lfs/objects/${oid}/download`,
+          ];
+          const headers = {
+            Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'repo-cassette-lfs-probe',
+          };
+          const marker = Buffer.from('{"probe":"repo-cassette-lfs"}');
+          for (const path of paths) {
+            try {
+              const first = await fetch(`${root}/${path}`, {headers, redirect:'manual'});
+              const location = first.headers.get('location');
+              const final = location && /^https:\/\//.test(location)
+                ? await fetch(location, {redirect:'follow'}) : first;
+              const data = Buffer.from(await final.arrayBuffer());
+              console.log('LFS_ROUTE', JSON.stringify({path, status:first.status,
+                finalStatus:final.status, contentType:final.headers.get('content-type'),
+                match:data.equals(marker), bytes:data.length,
+                redirected:Boolean(location)}));
+            } catch (error) {
+              console.log('LFS_ERROR', JSON.stringify({path, error:String(error).slice(0,160)}));
+            }
+          }
+          NODE
