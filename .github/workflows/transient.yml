@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - .github/workflows/transient.yml
+      - transient-probe.mjs
   workflow_dispatch:
 permissions:
   contents: read
