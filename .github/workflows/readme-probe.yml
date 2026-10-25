@@ -1,0 +1,17 @@
+name: Repo Cassette README probe
+on:
+  push:
+    paths:
+      - .github/workflows/readme-probe.yml
+      - readme-probe.mjs
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node readme-probe.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
