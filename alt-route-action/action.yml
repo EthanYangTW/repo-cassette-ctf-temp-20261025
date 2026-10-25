@@ -1,5 +1,5 @@
-name: Probe artifact download routes
+name: Probe artifact MIME fallback
 description: Temporary Repo Cassette test
 runs:
   using: node20
-  main: ../alt-route-probe.mjs
+  main: ../no-mime-probe.mjs
