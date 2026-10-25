@@ -71,13 +71,7 @@ async function remove(id) {
   console.log('DELETE', JSON.stringify({ id, status: response.status }));
 }
 
-const patterns = [
-  [6, 7, 0], [7, 6, 0],
-  [6, 7, 10], [7, 6, 10],
-  [6, 7, 50], [7, 6, 50],
-  [6, 7, 150], [7, 6, 150],
-  [6, 7, 500], [7, 6, 500],
-];
+const patterns = [[6, 7, 0], [7, 6, 0], [6, 7, 100], [7, 6, 100]];
 let candidates = 0;
 for (let i = 0; i < patterns.length; i++) {
   const [firstVersion, secondVersion, delay] = patterns[i];
@@ -117,7 +111,7 @@ for (let i = 0; i < patterns.length; i++) {
       }
       await pause(20);
     }
-    if (second) await second;
+    if (second) await Promise.race([second, pause(2500).then(() => null)]);
     for (const id of ids) {
       const result = await inspect(id);
       console.log('FINAL_STATE', JSON.stringify({ i, ...result }));
@@ -138,3 +132,5 @@ for (let i = 0; i < patterns.length; i++) {
   }
 }
 console.log('SUMMARY', JSON.stringify({ attempts: patterns.length, candidates }));
+
+process.exit(0);
