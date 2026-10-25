@@ -1,0 +1,12 @@
+name: race
+on: { workflow_dispatch: {} }
+permissions: { contents: read, actions: read }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/race
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROUNDS: '48'
