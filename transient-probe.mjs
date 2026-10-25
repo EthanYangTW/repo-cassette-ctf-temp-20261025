@@ -28,8 +28,9 @@ async function create(name, version) {
   const result = await twirp.CreateArtifact({
     ...backend, name, version, mimeType: StringValue.create({ value: mime }),
   });
+  console.log('CREATE_REPLY', JSON.stringify({version,keys:Object.keys(result),artifactId:result.artifactId??null}));
   if (!result.ok || !result.signedUploadUrl) throw Error(`Create v${version} failed`);
-  return { version, url: result.signedUploadUrl };
+  return { version, url: result.signedUploadUrl, artifactId:result.artifactId??null };
 }
 
 async function upload(url, data) {
@@ -72,35 +73,19 @@ async function remove(id) {
 }
 
 
-for (let i = 0; i < 2; i++) {
-  const firstVersion = i === 0 ? 6 : 7;
-  const secondVersion = i === 0 ? 7 : 6;
-  const name = `postfinal-${process.env.GITHUB_RUN_ID}-${i}`;
-  const ids = new Set();
+
+for (const version of [6,7]) {
+  const name=`pending-${process.env.GITHUB_RUN_ID}-${version}`;
   try {
-    const first = await create(name, firstVersion);
-    await upload(first.url, Buffer.from('{}'));
-    const firstId = await finalize(name, 2);
-    ids.add(firstId);
-    await upload(first.url, payload(firstId));
-    console.log('BEFORE', JSON.stringify({ i, ...await inspect(firstId) }));
-    const second = await Promise.race([create(name, secondVersion), pause(4000).then(() => null)]);
-    console.log('RECREATE', JSON.stringify({ i, success: !!second, secondVersion }));
-    console.log('AFTER_CREATE', JSON.stringify({ i, ...await inspect(firstId) }));
-    if (second) {
-      await upload(second.url, payload(firstId));
-      console.log('AFTER_UPLOAD', JSON.stringify({ i, ...await inspect(firstId) }));
-      const secondId = await Promise.race([finalize(name, payload(firstId).length), pause(4000).then(() => null)]);
-      console.log('SECOND_FINALIZE', JSON.stringify({ i, secondId }));
-      if (secondId) ids.add(secondId);
-      for (const id of ids) console.log('AFTER_FINALIZE', JSON.stringify({ i, ...await inspect(id) }));
-    }
-  } catch (error) {
-    console.log('ATTEMPT_ERROR', JSON.stringify({ i, error: String(error).slice(0,180) }));
-  }
-  for (const id of ids) {
-    try { await remove(id); } catch (error) { console.log('DELETE_ERROR', String(error)); }
-  }
+    const h=await create(name,version);
+    await upload(h.url,Buffer.from('{}'));
+    const list=await fetch(`${root}/actions/runs/${process.env.GITHUB_RUN_ID}/artifacts?name=${name}`,{headers,signal:AbortSignal.timeout(4000)});
+    const json=await list.json();
+    console.log('PENDING_LIST',JSON.stringify({version,status:list.status,total:json.total_count,ids:(json.artifacts??[]).map(x=>x.id)}));
+    if(h.artifactId) console.log('PENDING_DOWNLOAD',JSON.stringify({version,...await inspect(h.artifactId)}));
+    const id=await finalize(name,2);
+    console.log('FINALIZED',JSON.stringify({version,id,...await inspect(id)}));
+    await remove(id);
+  } catch(e){console.log('PENDING_ERROR',JSON.stringify({version,error:String(e).slice(0,180)}));}
 }
-console.log('SUMMARY', JSON.stringify({ attempts: 2 }));
 process.exit(0);
