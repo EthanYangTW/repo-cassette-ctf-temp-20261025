@@ -9,4 +9,4 @@ jobs:
       - uses: ./.github/actions/race
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ROUNDS: '48'
+          ROUNDS: '64'
