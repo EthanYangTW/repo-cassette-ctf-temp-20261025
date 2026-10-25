@@ -71,66 +71,36 @@ async function remove(id) {
   console.log('DELETE', JSON.stringify({ id, status: response.status }));
 }
 
-const patterns = [[6, 7, 0], [7, 6, 0], [6, 7, 100], [7, 6, 100]];
-let candidates = 0;
-for (let i = 0; i < patterns.length; i++) {
-  const [firstVersion, secondVersion, delay] = patterns[i];
-  const name = `transient-${process.env.GITHUB_RUN_ID}-${i}`;
+
+for (let i = 0; i < 2; i++) {
+  const firstVersion = i === 0 ? 6 : 7;
+  const secondVersion = i === 0 ? 7 : 6;
+  const name = `postfinal-${process.env.GITHUB_RUN_ID}-${i}`;
   const ids = new Set();
-  const seen = new Set();
-  let found = false;
   try {
-    const handles = await Promise.all([
-      create(name, firstVersion), create(name, secondVersion),
-    ]);
-    await Promise.all(handles.map(handle => upload(handle.url, Buffer.from('{}'))));
+    const first = await create(name, firstVersion);
+    await upload(first.url, Buffer.from('{}'));
     const firstId = await finalize(name, 2);
     ids.add(firstId);
-    await Promise.all(handles.map(handle => upload(handle.url, payload(firstId))));
-    const start = Date.now();
-    let second = null;
-    while (Date.now() - start < 1800) {
-      if (!second && Date.now() - start >= delay) {
-        second = finalize(name, 2).then(id => { ids.add(id); return id; }).catch(error => {
-          console.log('FINALIZE_ERROR', JSON.stringify({ i, error: String(error).slice(0,120) }));
-          return null;
-        });
-      }
-      for (const id of ids) {
-        try {
-          const result = await inspect(id);
-          const key = `${result.id}:${result.status}:${result.ct}:${result.match}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            console.log('STATE', JSON.stringify({ i, ageMs: Date.now()-start, ...result }));
-          }
-          if (result.candidate) found = true;
-        } catch (error) {
-          console.log('POLL_ERROR', JSON.stringify({ i, error: String(error).slice(0,120) }));
-        }
-      }
-      await pause(20);
-    }
-    if (second) await Promise.race([second, pause(2500).then(() => null)]);
-    for (const id of ids) {
-      const result = await inspect(id);
-      console.log('FINAL_STATE', JSON.stringify({ i, ...result }));
-      if (result.candidate) found = true;
+    await upload(first.url, payload(firstId));
+    console.log('BEFORE', JSON.stringify({ i, ...await inspect(firstId) }));
+    const second = await Promise.race([create(name, secondVersion), pause(4000).then(() => null)]);
+    console.log('RECREATE', JSON.stringify({ i, success: !!second, secondVersion }));
+    console.log('AFTER_CREATE', JSON.stringify({ i, ...await inspect(firstId) }));
+    if (second) {
+      await upload(second.url, payload(firstId));
+      console.log('AFTER_UPLOAD', JSON.stringify({ i, ...await inspect(firstId) }));
+      const secondId = await Promise.race([finalize(name, payload(firstId).length), pause(4000).then(() => null)]);
+      console.log('SECOND_FINALIZE', JSON.stringify({ i, secondId }));
+      if (secondId) ids.add(secondId);
+      for (const id of ids) console.log('AFTER_FINALIZE', JSON.stringify({ i, ...await inspect(id) }));
     }
   } catch (error) {
     console.log('ATTEMPT_ERROR', JSON.stringify({ i, error: String(error).slice(0,180) }));
   }
-  if (found) {
-    candidates++;
-    console.log('CANDIDATE', JSON.stringify({ i, ids: [...ids] }));
-  } else {
-    for (const id of ids) {
-      try { await remove(id); } catch (error) {
-        console.log('DELETE_ERROR', JSON.stringify({ id, error: String(error).slice(0,120) }));
-      }
-    }
+  for (const id of ids) {
+    try { await remove(id); } catch (error) { console.log('DELETE_ERROR', String(error)); }
   }
 }
-console.log('SUMMARY', JSON.stringify({ attempts: patterns.length, candidates }));
-
+console.log('SUMMARY', JSON.stringify({ attempts: 2 }));
 process.exit(0);
