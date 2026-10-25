@@ -6,13 +6,13 @@ on:
       - transient-probe.mjs
   workflow_dispatch:
 permissions:
-  contents: write
-  actions: write
+  contents: read
+  actions: read
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: node release-route-probe.mjs
+      - run: node step-route-probe.mjs
         env:
           GITHUB_TOKEN: ${{ github.token }}
