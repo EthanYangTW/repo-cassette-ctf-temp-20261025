@@ -1,0 +1,5 @@
+name: Repo Cassette transient artifact probe
+description: Test artifact metadata during finalization
+runs:
+  using: node20
+  main: ../transient-probe.mjs
